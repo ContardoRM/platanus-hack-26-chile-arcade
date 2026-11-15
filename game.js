@@ -131,6 +131,9 @@ function create() {
   this.express = false;
   this.expressUnlocked = false;
   this.records = { gira: null, express: null };
+  this.history = { gira: [], express: [] };
+  this.historyView = null;
+  this.master = null;
   this.recordWrites = loadRecords(this);
   this.round = newRound();
   this.stageIndex = 0;
@@ -203,6 +206,23 @@ function create() {
         advanceHack(this);
       });
   });
+  this.historyButton = label(762, 144, 'HISTORIAL  /  B6 · L', '12px', '#a7f2d0')
+    .setOrigin(1, 0).setPadding(5).setBackgroundColor('#273c50').setDepth(4)
+    .setInteractive({ useHandCursor: true }).setVisible(false)
+    .on('pointerdown', () => toggleHistory(this));
+  this.masterButton = label(400, 348, 'ARCHIVO DE RUTA DESBLOQUEADO  /  B4 · J', '13px', '#a7f2d0')
+    .setOrigin(0.5).setPadding(4).setBackgroundColor('#24483d').setDepth(4)
+    .setInteractive({ useHandCursor: true }).setVisible(false)
+    .on('pointerdown', () => startMaster(this));
+  this.masterCells = Array.from({ length: 24 }, (_, index) =>
+    label(250 + (index % 6) * 60, 219 + Math.floor(index / 6) * 29, '', '16px', '#8cd5a8')
+      .setOrigin(0.5).setPadding(4).setDepth(4).setInteractive({ useHandCursor: true })
+      .setVisible(false).on('pointerdown', () => {
+        if (!this.master || this.master.batch >= MASTER_GROUPS.length) return;
+        this.master.cursor = index;
+        advanceMaster(this);
+      })
+  );
   this.tutorial = label(600, 474, '', '11px', '#ffdc97').setOrigin(1, 0).setDepth(2);
   this.dynamic = this.add.graphics().setDepth(1);
 
@@ -213,13 +233,31 @@ function create() {
       toggleMusic(this);
       return;
     }
+    if (this.master) {
+      if (code === 'P1_3' || event.key === 'Escape') this.master = null;
+      else if (code === 'P1_1' || code === 'START1') advanceMaster(this);
+      else moveMasterCursor(this.master, code);
+      return;
+    }
+    if (code === 'P1_6') {
+      toggleHistory(this);
+      return;
+    }
+    if (this.historyView) {
+      if (code === 'P1_2') switchHistory(this);
+      else if (code === 'START1' || code === 'P1_3' || event.key === 'Escape') this.historyView = null;
+      return;
+    }
     if (this.hack) {
       if (code === 'P1_3' || event.key === 'Escape') this.hack = null;
       else if (code === 'P1_1' || code === 'START1') advanceHack(this);
       else if (this.hack.phase === 'puzzle') moveHackCursor(this.hack, code);
       return;
     }
-    if (code === 'P1_4') startHack(this);
+    if (code === 'P1_4') {
+      if (canStartMaster(this)) startMaster(this);
+      else startHack(this);
+    }
     if (code === 'START1') confirmPanel(this);
     if (code === 'P1_3' || event.key === 'Escape') closeResults(this);
     if (code === 'P1_2') startExpress(this);
@@ -239,6 +277,8 @@ function assignOperator(scene) {
 }
 
 function confirmPanel(scene) {
+  if (scene.master) return advanceMaster(scene);
+  if (scene.historyView) return switchHistory(scene);
   if (scene.hack) {
     advanceHack(scene);
     return;
@@ -249,6 +289,11 @@ function confirmPanel(scene) {
 }
 
 function closeResults(scene) {
+  if (scene.master || scene.historyView) {
+    scene.master = null;
+    scene.historyView = null;
+    return;
+  }
   if (scene.hack) {
     scene.hack = null;
     return;
@@ -312,12 +357,31 @@ function validRecord(value) {
     && /-(0[1-9]|[1-9][0-9])$/.test(value.operator);
 }
 
+function scoreStorage() {
+  if (window.platanusArcadeStorage) return window.platanusArcadeStorage;
+  if (!['localhost', '127.0.0.1'].includes(window.location?.hostname)) return null;
+  return {
+    async get(key) {
+      const raw = window.localStorage.getItem(key);
+      return { found: raw !== null, value: raw === null ? null : JSON.parse(raw) };
+    },
+    async set(key, value) {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    }
+  };
+}
+
 async function loadRecords(scene) {
-  const storage = window.platanusArcadeStorage;
+  const storage = scoreStorage();
   if (!storage) return;
   await Promise.all(Object.entries(RECORD_KEYS).map(async ([mode, key]) => {
     try {
-      const result = await storage.get(key);
+      const [result, recent] = await Promise.all([
+        storage.get(key), storage.get(key + '.history').catch(() => null)
+      ]);
+      if (recent?.found && Array.isArray(recent.value)) {
+        scene.history[mode] = recent.value.filter(validRecord).slice(0, 10);
+      }
       if (result?.found && validRecord(result.value)) {
         scene.records[mode] = result.value;
         if (mode === 'gira') scene.expressUnlocked = true;
@@ -328,18 +392,29 @@ async function loadRecords(scene) {
   }));
 }
 
-function submitRecord(scene, mode, score, blocks) {
+function submitRecord(scene, mode, score, blocks, eligible = true) {
   const round = scene.round;
   const candidate = { score, blocks, operator: scene.operator };
   scene.recordWrites = scene.recordWrites.then(async () => {
     const best = scene.records[mode];
-    if (best && (score < best.score || (score === best.score && blocks >= best.blocks))) return;
-    scene.records[mode] = candidate;
-    round.newRecord = true;
+    const improved = eligible && (!best || score > best.score
+      || (score === best.score && blocks < best.blocks));
+    const history = [candidate, ...scene.history[mode]].slice(0, 10);
+    scene.history[mode] = history;
+    if (improved) {
+      scene.records[mode] = candidate;
+      round.newRecord = true;
+      round.masterUnlocked = mode === 'gira';
+    }
     try {
-      await window.platanusArcadeStorage?.set(RECORD_KEYS[mode], candidate);
+      const storage = scoreStorage();
+      if (!storage) return;
+      await Promise.all([
+        storage.set(RECORD_KEYS[mode] + '.history', history),
+        improved ? storage.set(RECORD_KEYS[mode], candidate) : undefined
+      ]);
     } catch {
-      // The record remains available in this session if saving fails.
+      // Keep the available scores in memory when the bridge is unavailable.
     }
   });
 }
@@ -963,6 +1038,8 @@ function update(_time, delta) {
       if (round.elapsed >= stage.seconds) {
         this.phase = 'finished';
         if (this.express) submitRecord(this, 'express', round.score, round.blocks);
+        else submitRecord(this, 'gira', this.completed.score + round.score,
+          this.completed.blocks + round.blocks, false);
       }
     }
   }
@@ -1194,13 +1271,116 @@ function drawHackRoom(scene) {
   drawHackBoard(scene);
 }
 
+const MASTER_GROUPS = [[8, 9, 15], [1, 7, 13], [16, 17, 23]];
+
+function toggleHistory(scene) {
+  if (scene.historyView) scene.historyView = null;
+  else if (['ready', 'won', 'finished'].includes(scene.phase) && !scene.master) {
+    scene.historyView = scene.express ? 'express' : 'gira';
+  }
+}
+
+function switchHistory(scene) {
+  scene.historyView = scene.historyView === 'gira' ? 'express' : 'gira';
+}
+
+function canStartMaster(scene) {
+  if (scene.historyView || scene.master) return false;
+  return (scene.phase === 'won' && scene.round.masterUnlocked)
+    || (scene.phase === 'ready' && Boolean(scene.records.gira));
+}
+
+function startMaster(scene) {
+  if (!canStartMaster(scene)) return;
+  scene.master = { batch: 0, cursor: 0, errorUntil: 0 };
+}
+
+function moveMasterCursor(master, code) {
+  const column = master.cursor % 6;
+  if (code === 'P1_U' && master.cursor >= 6) master.cursor -= 6;
+  if (code === 'P1_D' && master.cursor < 18) master.cursor += 6;
+  if (code === 'P1_L' && column > 0) master.cursor--;
+  if (code === 'P1_R' && column < 5) master.cursor++;
+}
+
+function advanceMaster(scene) {
+  const master = scene.master;
+  if (master.batch >= MASTER_GROUPS.length) {
+    scene.master = null;
+    return;
+  }
+  if (MASTER_GROUPS[master.batch].includes(master.cursor)) {
+    master.batch++;
+    master.errorUntil = 0;
+    playCue(scene, 'perfect');
+  } else {
+    master.errorUntil = scene.sceneryTime + 0.9;
+    playCue(scene, 'blocked');
+  }
+}
+
+function drawArchive(scene) {
+  const { panel, master, historyView } = scene;
+  scene.panelEvent.setText(EVENT_NAME + '  /  LATAM TOUR');
+  scene.panelRoute.setVisible(false);
+  scene.expressButton.setVisible(false);
+  scene.panelClose.setVisible(true).setX(400).setText('VOLVER  /  B3 · O · ESC');
+  scene.panelDetail.setFontSize('13px');
+  scene.panelRecord.setText('');
+  if (historyView) {
+    const history = scene.history[historyView];
+    const best = scene.records[historyView];
+    scene.panelHeading.setText(best ? `RÉCORD · ${best.operator} · ${best.score} PTS` : 'HISTORIAL DE OPERADORES').setY(145);
+    scene.panelTitle.setText(historyView === 'gira' ? 'Últimas partidas · Gira' : 'Últimas partidas · Express').setY(173);
+    scene.panelDetail.setText(history.length ? history.map(({ operator, score, blocks }, index) =>
+      `${String(index + 1).padStart(2, '0')}  ${operator.padEnd(14)}  ${String(score).padStart(6)} PTS  ·  ${blocks} BLOQ.`
+    ).join('\n') : 'Todavía no hay partidas guardadas.').setY(272);
+    scene.panelStats.setText('');
+    scene.panelStart.setText('CAMBIAR MODO  /  B2 · I');
+    return;
+  }
+
+  const done = master.batch >= MASTER_GROUPS.length;
+  panel.fillStyle(0x061b14).fillRect(137, 137, 526, 207);
+  panel.lineStyle(1, 0x326a50).strokeRect(137, 137, 526, 207);
+  scene.panelHeading.setText(`TURNO MAESTRO  /  LOTES AISLADOS ${master.batch}/3`).setY(149);
+  scene.panelTitle.setText('Archivo de Ruta').setY(178);
+  scene.panelDetail.setText(done ? 'SEÑAL RECUPERADA  /  ESTACIÓN 07: FUERA DE PLANO' : '').setY(310);
+  scene.panelStats.setText(done ? 'EL MAPA OFICIAL TERMINABA EN EL GOLDEN GATE.'
+    : scene.sceneryTime < master.errorUntil ? 'REGISTRO NORMAL · BUSCA EL GRUPO QUE VIBRA'
+      : 'AÍSLA EL GRUPO FUERA DE FASE  /  JOYSTICK + B1').setY(done ? 330 : 328);
+  scene.panelStart.setVisible(done).setText('VOLVER AL RESULTADO  /  ENTER');
+  if (done) {
+    panel.lineStyle(2, 0x78dca0).lineBetween(218, 259, 578, 259);
+    for (let index = 0; index < 7; index++) {
+      panel.fillStyle(index === 6 ? 0xf5d271 : 0x78dca0).fillCircle(218 + index * 60, 259, 5);
+    }
+    return;
+  }
+  const group = MASTER_GROUPS[master.batch];
+  for (const [index, cell] of scene.masterCells.entries()) {
+    const abnormal = group.includes(index);
+    const shift = abnormal ? Math.round(Math.sin(scene.sceneryTime * 9) * 2) : 0;
+    const focused = index === master.cursor;
+    cell.setVisible(true).setY(218 + Math.floor(index / 6) * 29 + shift)
+      .setText(String(100 + (index * 73 + master.batch * 137) % 900))
+      .setColor(focused ? '#f5d271' : abnormal ? '#adffba' : '#64a582')
+      .setBackgroundColor(focused ? '#315145' : '#061b14');
+  }
+}
+
 function drawRunPanel(scene, score) {
   const { phase, round } = scene;
   const transfer = phase === 'cleared';
   const finished = phase === 'finished';
   const results = phase === 'won' || finished;
   const briefing = round.power === 'intro';
-  const open = briefing || transfer || results;
+  const archive = Boolean(scene.master || scene.historyView);
+  const open = briefing || transfer || results || archive;
+  scene.historyButton.setVisible(!scene.master && !scene.hack
+    && (phase === 'ready' || results));
+  scene.masterButton.setVisible(canStartMaster(scene)).setY(phase === 'ready' ? 221 : 348);
+  for (const cell of scene.masterCells) cell.setVisible(false);
   scene.panel.clear();
   scene.hackBoard.setVisible(Boolean(scene.hack));
   scene.panelDetail.setX(400);
@@ -1227,6 +1407,10 @@ function drawRunPanel(scene, score) {
   scene.panel.lineStyle(2, 0x528687).strokeRoundedRect(116, 125, 568, 337, 10);
   scene.panel.fillStyle(0x31495d).fillRect(150, 347, 500, 1);
 
+  if (archive) {
+    drawArchive(scene);
+    return;
+  }
   if (scene.hack) {
     drawHackRoom(scene);
     return;
@@ -1282,6 +1466,7 @@ function drawRunPanel(scene, score) {
   scene.panelRecord.setText(best
     ? `${round.newRecord ? '¡NUEVO RÉCORD!' : 'RÉCORD'}  ·  ${best.score} PTS  ·  ${best.operator}`
     : '');
+  if (round.masterUnlocked) scene.panelStart.setY(384);
   scene.panelStart.setText(scene.express ? 'REINICIAR EXPRESS  /  ENTER' : 'REINICIAR GIRA  /  ENTER');
   scene.expressButton.setText('TURNO EXPRESS  /  B2 · I');
 }
