@@ -42,6 +42,12 @@ const STAGES = [
     seconds: 50, speed: 305, leftChance: 0.5, track: 2, width: 19, center: 330, swing: 95, rate: 1.2, sky: 0x163042 }
 ];
 const FINAL_STAGE_INDEX = STAGES.length - 1;
+const HACK_SECONDS = 36;
+const HACK_GRID = 4;
+const HACK_ART_SIZE = 32;
+const HACK_TILE_PIXELS = HACK_ART_SIZE / HACK_GRID;
+const HACK_BOARD = { x: 192, y: 200, tile: 40 };
+const HACK_PREVIEW = { x: 462, y: 220, tile: 24 };
 const EVENT_NAME = 'PLATANUS HACK 26';
 const EXPRESS = { ...STAGES[FINAL_STAGE_INDEX], seconds: 45, width: 24, rate: 1.4 };
 const RECORD_KEYS = {
@@ -69,6 +75,31 @@ const SOUNDS = {
     { wave: 'triangle', from: 72, to: 113, delay: 0.15, length: 0.96, volume: 0.06 },
     { wave: 'sine', from: 440, to: 523, delay: 0.99, length: 0.19, volume: 0.075 }]
 };
+const CITY_MUSIC = [
+  // Santiago: a cueca-inspired phrase in six eighth notes.
+  { bpm: 106, beat: 3, wave: 'triangle', lead: [67, 0, 71, 74, 72, 71, 69, 0, 67, 74, 71, 67],
+    bass: [43, 50, 45, 50], accents: [0, 3, 6, 8, 10] },
+  // Mexico City: a lilting set of plucked notes.
+  { bpm: 116, beat: 3, wave: 'triangle', lead: [69, 72, 76, 74, 0, 72, 71, 74, 77, 76, 72, 69],
+    bass: [45, 52, 43, 47], accents: [0, 3, 6, 9] },
+  // Buenos Aires: a tango-inspired 3-3-2 accent pattern.
+  { bpm: 106, beat: 2, wave: 'triangle', lead: [69, 0, 0, 72, 71, 0, 67, 0, 64, 0, 0, 68, 71, 0, 69, 0],
+    bass: [45, 52, 45, 52, 40, 47, 40, 45], accents: [0, 3, 6, 8, 11, 14] },
+  // Bogotá: a cumbia-inspired bass and offbeat.
+  { bpm: 98, beat: 2, wave: 'sine', lead: [0, 72, 76, 0, 79, 76, 74, 0, 0, 71, 74, 0, 77, 74, 72, 0],
+    bass: [48, 55, 48, 55, 43, 55, 43, 48], accents: [0, 2, 3, 6, 8, 10, 11, 14] },
+  // Caracas: a joropo-inspired alternation of accents.
+  { bpm: 127, beat: 3, wave: 'triangle', lead: [74, 77, 81, 79, 76, 74, 73, 76, 79, 77, 76, 74],
+    bass: [50, 57, 45, 50], accents: [0, 2, 4, 6, 9] },
+  // San Francisco: syncopated arcade jazz.
+  { bpm: 107, beat: 2, wave: 'sine', lead: [70, 0, 0, 73, 75, 0, 77, 73, 72, 0, 75, 0, 70, 68, 0, 65],
+    bass: [46, 53, 44, 48, 41, 48, 43, 46], accents: [1, 3, 5, 7, 9, 11, 13, 15] }
+];
+const HACK_MUSIC = {
+  bpm: 105, beat: 2, wave: 'triangle',
+  lead: [76, 0, 79, 83, 0, 79, 74, 0, 72, 0, 76, 79, 81, 76, 74, 0],
+  bass: [40, 47, 43, 47, 36, 43, 38, 45], accents: [0, 4, 8, 12]
+};
 const POINTS = { perfect: 150, onTime: 100, blocked: -50, missed: -20 };
 const OPERATOR_NAMES = ['VOLANTÍN', 'ÁNGEL', 'OBELISCO', 'MONSERRATE', 'ÁVILA', 'GOLDEN'];
 const keys = Object.fromEntries(Object.entries(CABINET_KEYS).flatMap(
@@ -92,6 +123,10 @@ function newRound() {
 
 function create() {
   this.phase = 'ready';
+  this.musicMuted = false;
+  this.musicTrack = null;
+  this.hack = null;
+  this.hackPlayed = false;
   this.operator = '';
   this.express = false;
   this.expressUnlocked = false;
@@ -111,6 +146,9 @@ function create() {
   label(36, 24, 'CABINA A TIEMPO', '42px');
   label(762, 30, EVENT_NAME, '15px', '#ffdc97').setOrigin(1, 0);
   label(762, 51, 'ARCADE CHALLENGE', '11px', '#8ccdc3').setOrigin(1, 0);
+  this.musicButton = label(762, 9, 'MÚSICA: SÍ / B5 · K', '11px', '#a7c3ce')
+    .setOrigin(1, 0).setPadding(3).setBackgroundColor('#202e42').setDepth(2)
+    .setInteractive({ useHandCursor: true }).on('pointerdown', () => toggleMusic(this));
   this.route = label(38, 79, '', '19px', '#77e9c9');
   this.hud = label(38, 115, '', '19px');
   label(194, 470, 'SINCRONÍA DEL CABLE', '12px', '#a7c3ce').setDepth(2);
@@ -148,12 +186,40 @@ function create() {
     .setOrigin(0.5).setPadding(10).setBackgroundColor('#273c50').setDepth(4)
     .setInteractive({ useHandCursor: true }).setVisible(false)
     .on('pointerdown', () => startExpress(this));
+  this.hackButton = label(400, 423, 'SALA HACK  /  B4 · J', '15px', '#ffdc97')
+    .setOrigin(0.5).setPadding(10).setBackgroundColor('#273c50').setDepth(4)
+    .setInteractive({ useHandCursor: true }).setVisible(false)
+    .on('pointerdown', () => startHack(this));
+  this.hackBoard = this.add.graphics().setDepth(3.5);
+  this.hackArt = makeHackArt();
+  this.hackOptions = Array.from({ length: HACK_GRID ** 2 }, (_, index) => {
+    const { x, y, tile } = HACK_BOARD;
+    return this.add.zone(x + (index % HACK_GRID + 0.5) * tile,
+      y + (Math.floor(index / HACK_GRID) + 0.5) * tile, tile - 2, tile - 2)
+      .setDepth(4).setInteractive({ useHandCursor: true }).setVisible(false)
+      .on('pointerdown', () => {
+        if (this.hack?.phase !== 'puzzle') return;
+        this.hack.choice = index;
+        advanceHack(this);
+      });
+  });
   this.tutorial = label(600, 474, '', '11px', '#ffdc97').setOrigin(1, 0).setDepth(2);
   this.dynamic = this.add.graphics().setDepth(1);
 
   const keydown = (event) => {
     const code = keys[event.key.toLowerCase()];
     if (event.repeat) return;
+    if (code === 'P1_5') {
+      toggleMusic(this);
+      return;
+    }
+    if (this.hack) {
+      if (code === 'P1_3' || event.key === 'Escape') this.hack = null;
+      else if (code === 'P1_1' || code === 'START1') advanceHack(this);
+      else if (this.hack.phase === 'puzzle') moveHackCursor(this.hack, code);
+      return;
+    }
+    if (code === 'P1_4') startHack(this);
     if (code === 'START1') confirmPanel(this);
     if (code === 'P1_3' || event.key === 'Escape') closeResults(this);
     if (code === 'P1_2') startExpress(this);
@@ -173,12 +239,20 @@ function assignOperator(scene) {
 }
 
 function confirmPanel(scene) {
+  if (scene.hack) {
+    advanceHack(scene);
+    return;
+  }
   if (scene.round.power === 'intro') openIncident(scene.round);
   else if (scene.express && scene.phase === 'finished') startExpress(scene);
   else startStage(scene);
 }
 
 function closeResults(scene) {
+  if (scene.hack) {
+    scene.hack = null;
+    return;
+  }
   if (scene.phase !== 'won' && scene.phase !== 'finished') return;
   scene.phase = 'ready';
   scene.express = false;
@@ -201,10 +275,14 @@ function startStage(scene) {
     scene.total = 0;
     scene.completed = { perfects: 0, blocks: 0, score: 0, elapsed: 0 };
   }
-  if (scene.phase !== 'cleared') assignOperator(scene);
+  if (scene.phase !== 'cleared') {
+    assignOperator(scene);
+    scene.hackPlayed = false;
+  }
   scene.round = newRound();
   launchForStage(scene.round, scene.express ? EXPRESS : STAGES[scene.stageIndex]);
   scene.phase = 'playing';
+  if (!scene.musicMuted) openAudio(scene);
   scene.buttonPulse = 0;
   drawStage(scene);
 }
@@ -221,6 +299,7 @@ function startExpress(scene) {
   scene.round = newRound();
   launchForStage(scene.round, scene.express ? EXPRESS : STAGES[scene.stageIndex]);
   scene.phase = 'playing';
+  if (!scene.musicMuted) openAudio(scene);
   scene.buttonPulse = 0;
   drawStage(scene);
 }
@@ -569,34 +648,104 @@ function drawSanFrancisco(art) {
   for (const [x, y] of cable.slice(1, -1)) art.fillRect(x, y, 2, 388 - y);
 }
 
-function playCue(scene, cue) {
+function openAudio(scene) {
   try {
     const Audio = window.AudioContext || window.webkitAudioContext;
-    if (!Audio) return;
+    if (!Audio) return null;
     const context = scene.soundContext ??= new Audio();
     if (context.state === 'suspended') context.resume().catch(() => {});
-    const start = context.currentTime;
-    for (const note of SOUNDS[cue]) {
-      const time = start + note.delay;
-      const end = time + note.length;
-      const voice = context.createOscillator();
-      const level = context.createGain();
-      voice.type = note.wave;
-      voice.frequency.setValueAtTime(note.from, time);
-      voice.frequency.exponentialRampToValueAtTime(note.to, end);
-      level.gain.setValueAtTime(0.0001, time);
-      level.gain.exponentialRampToValueAtTime(note.volume, time + Math.min(0.025, note.length / 4));
-      level.gain.exponentialRampToValueAtTime(0.0001, end);
-      voice.connect(level).connect(context.destination);
-      voice.onended = () => {
-        voice.disconnect();
-        level.disconnect();
-      };
-      voice.start(time);
-      voice.stop(end);
-    }
+    return context;
   } catch {
     // Audio is optional in the arcade iframe.
+    return null;
+  }
+}
+
+function synthNote(context, output, note, time) {
+  const end = time + note.length;
+  const voice = context.createOscillator();
+  const level = context.createGain();
+  voice.type = note.wave;
+  voice.frequency.setValueAtTime(note.from, time);
+  voice.frequency.exponentialRampToValueAtTime(note.to, end);
+  level.gain.setValueAtTime(0.0001, time);
+  level.gain.exponentialRampToValueAtTime(note.volume, time + Math.min(0.025, note.length / 4));
+  level.gain.exponentialRampToValueAtTime(0.0001, end);
+  voice.connect(level).connect(output);
+  voice.onended = () => {
+    voice.disconnect();
+    level.disconnect();
+  };
+  voice.start(time);
+  voice.stop(end);
+}
+
+function playCue(scene, cue) {
+  const context = openAudio(scene);
+  if (!context) return;
+  try {
+    for (const note of SOUNDS[cue]) {
+      synthNote(context, context.destination, note, context.currentTime + note.delay);
+    }
+  } catch {
+    // An audio failure cannot interrupt a dispatch.
+  }
+}
+
+function toggleMusic(scene) {
+  scene.musicMuted = !scene.musicMuted;
+  scene.musicButton.setText(scene.musicMuted ? 'MÚSICA: NO / B5 · K' : 'MÚSICA: SÍ / B5 · K');
+  if (!scene.musicMuted) openAudio(scene);
+  updateMusic(scene);
+}
+
+function midiFrequency(note) {
+  return 440 * 2 ** ((note - 69) / 12);
+}
+
+function updateMusic(scene) {
+  const context = scene.soundContext;
+  if (!context || context.state !== 'running' || scene.musicFailed) return;
+  const track = scene.musicMuted ? null
+    : scene.hack?.phase === 'puzzle' ? HACK_MUSIC
+      : scene.phase === 'playing' || scene.phase === 'crossing' ? CITY_MUSIC[scene.stageIndex] : null;
+  try {
+    if (track !== scene.musicTrack) {
+      if (scene.musicOutput) {
+        scene.musicOutput.disconnect();
+        scene.musicOutput = null;
+      }
+      scene.musicTrack = track;
+      scene.musicStep = 0;
+      scene.musicNext = context.currentTime + 0.025;
+      if (track) {
+        scene.musicOutput = context.createGain();
+        scene.musicOutput.connect(context.destination);
+      }
+    }
+    if (!track || context.currentTime + 0.07 < scene.musicNext) return;
+    const interval = 60 / (track.bpm * 2);
+    const time = Math.max(scene.musicNext, context.currentTime + 0.006);
+    const step = scene.musicStep;
+    const melody = track.lead[step];
+    if (melody) {
+      const hz = midiFrequency(melody);
+      synthNote(context, scene.musicOutput,
+        { wave: track.wave, from: hz, to: hz, length: interval * 0.72, volume: 0.022 }, time);
+    }
+    if (step % track.beat === 0) {
+      const hz = midiFrequency(track.bass[Math.floor(step / track.beat)]);
+      synthNote(context, scene.musicOutput,
+        { wave: 'sine', from: hz, to: hz, length: interval * 1.25, volume: 0.026 }, time);
+    }
+    if (track.accents.includes(step)) {
+      synthNote(context, scene.musicOutput,
+        { wave: 'triangle', from: 152, to: 80, length: 0.065, volume: 0.014 }, time);
+    }
+    scene.musicStep = (step + 1) % track.lead.length;
+    scene.musicNext = time + interval;
+  } catch {
+    scene.musicFailed = true;
   }
 }
 
@@ -790,6 +939,8 @@ function update(_time, delta) {
   const isFinal = this.stageIndex === FINAL_STAGE_INDEX;
   const seconds = Math.min(delta / 1000, 0.05);
   this.sceneryTime += seconds;
+  if (this.hack) updateHack(this.hack, seconds);
+  updateMusic(this);
   drawScenery(this);
   const briefing = round.power === 'intro';
   const emergency = round.power === 'offline' || round.power === 'restoring';
@@ -884,6 +1035,165 @@ function drawBlackout(art, round) {
   art.fillStyle(0xffac61, 0.2).fillRect(77, 337, 16, 11).fillRect(240, 337, 16, 11);
 }
 
+function canStartHack(scene) {
+  return scene.phase === 'cleared' && scene.stageIndex === 0
+    && scene.round.power === 'restored' && !scene.hack && !scene.hackPlayed;
+}
+
+function startHack(scene) {
+  if (!canStartHack(scene)) return;
+  scene.hackPlayed = true;
+  if (!scene.musicMuted) openAudio(scene);
+  scene.hack = {
+    phase: 'puzzle', choice: 0, selected: null, elapsed: 0,
+    order: Array.from({ length: HACK_GRID ** 2 }, (_, index) => index), published: false
+  };
+  for (const [first, second] of [[0, 10], [2, 13], [5, 15], [7, 8]]) {
+    const order = scene.hack.order;
+    [order[first], order[second]] = [order[second], order[first]];
+  }
+}
+
+function moveHackCursor(hack, code) {
+  const row = Math.floor(hack.choice / HACK_GRID);
+  const column = hack.choice % HACK_GRID;
+  if (code === 'P1_U' && row > 0) hack.choice -= HACK_GRID;
+  if (code === 'P1_D' && row < HACK_GRID - 1) hack.choice += HACK_GRID;
+  if (code === 'P1_L' && column > 0) hack.choice--;
+  if (code === 'P1_R' && column < HACK_GRID - 1) hack.choice++;
+}
+
+function advanceHack(scene) {
+  const hack = scene.hack;
+  if (hack.phase === 'demo') {
+    scene.hack = null;
+    return;
+  }
+  if (hack.selected === null) {
+    hack.selected = hack.choice;
+    return;
+  }
+  const from = hack.selected;
+  const to = hack.choice;
+  const moved = hack.order[from];
+  hack.order[from] = hack.order[to];
+  hack.order[to] = moved;
+  hack.selected = null;
+  if (hack.order.every((step, index) => step === index)) {
+    hack.published = true;
+    hack.phase = 'demo';
+    playCue(scene, 'perfect');
+  }
+}
+
+function updateHack(hack, seconds) {
+  if (hack.phase === 'demo') return;
+  hack.elapsed = Math.min(HACK_SECONDS, hack.elapsed + seconds);
+  if (hack.elapsed >= HACK_SECONDS) hack.phase = 'demo';
+}
+
+function makeHackArt() {
+  const pixels = new Uint32Array(HACK_ART_SIZE ** 2).fill(0x172c49);
+  const rect = (x, y, width, height, color) => {
+    for (let row = y; row < y + height; row++) {
+      pixels.fill(color, row * HACK_ART_SIZE + x, row * HACK_ART_SIZE + x + width);
+    }
+  };
+  // A team at the hackathon, with a banana above the screens and Santiago at dusk.
+  rect(0, 10, 32, 9, 0x354873);
+  rect(0, 15, 32, 6, 0x536083);
+  for (const [x, y, width] of [[0, 12, 3], [4, 14, 3], [8, 10, 2], [11, 15, 4],
+    [18, 14, 4], [23, 11, 3], [27, 14, 2], [30, 12, 2]]) {
+    rect(x, y, width, 20 - y, 0x243553);
+    rect(x + 1, y + 2, 1, 1, 0xffbe74);
+  }
+  for (const [x, y] of [[3, 3], [6, 7], [10, 4], [23, 3], [28, 6], [30, 2]]) {
+    rect(x, y, 1, 1, 0xa5ced9);
+  }
+  for (const [x, y, width] of [[12, 9, 4], [10, 8, 9], [9, 7, 12], [9, 6, 5],
+    [16, 6, 7], [19, 5, 5], [21, 4, 4], [23, 3, 3]]) {
+    rect(x, y, width, 1, 0xffd754);
+  }
+  rect(24, 2, 2, 1, 0xc18752);
+  rect(11, 8, 5, 1, 0xf4ab46);
+  rect(0, 19, 32, 13, 0x20283e);
+  rect(0, 25, 32, 2, 0xe59772);
+  rect(0, 27, 32, 5, 0x513b58);
+  for (const [x, y, screen] of [[2, 18, 0x72d6c4], [12, 16, 0xc3a2ff], [23, 18, 0x80caff]]) {
+    rect(x, y, 7, 6, 0x091526);
+    rect(x + 1, y + 1, 5, 4, screen);
+    rect(x + 2, y + 2, 3, 1, 0x2f5671);
+    rect(x + 3, y + 6, 1, 2, 0x596d83);
+  }
+  for (const [x, y, shirt, skin] of [[6, 24, 0x5eaecb, 0xe8b897],
+    [15, 22, 0xdb8db6, 0xa96650], [25, 24, 0x8ba4f1, 0xd7997c]]) {
+    rect(x, y, 4, 4, 0x30243b);
+    rect(x + 1, y + 1, 3, 3, skin);
+    rect(x - 1, y + 4, 6, 4, shirt);
+  }
+  return pixels;
+}
+
+function drawHackTile(art, pixels, piece, x, y, size) {
+  const sourceX = (piece % HACK_GRID) * HACK_TILE_PIXELS;
+  const sourceY = Math.floor(piece / HACK_GRID) * HACK_TILE_PIXELS;
+  const pixelSize = size / HACK_TILE_PIXELS;
+  for (let row = 0; row < HACK_TILE_PIXELS; row++) {
+    const offset = (sourceY + row) * HACK_ART_SIZE + sourceX;
+    let start = 0;
+    while (start < HACK_TILE_PIXELS) {
+      const color = pixels[offset + start];
+      let end = start + 1;
+      while (end < HACK_TILE_PIXELS && pixels[offset + end] === color) end++;
+      art.fillStyle(color).fillRect(x + start * pixelSize, y + row * pixelSize,
+        (end - start) * pixelSize, pixelSize);
+      start = end;
+    }
+  }
+}
+
+function drawHackBoard(scene) {
+  const { hack, hackBoard: art, hackArt } = scene;
+  const key = `${hack.order.join(',')}:${hack.choice}:${hack.selected}:${hack.phase}`;
+  if (scene.hackBoardKey === key) return;
+  scene.hackBoardKey = key;
+  art.clear();
+  const board = HACK_BOARD;
+  const preview = HACK_PREVIEW;
+  for (const [index, piece] of hack.order.entries()) {
+    const column = index % HACK_GRID;
+    const row = Math.floor(index / HACK_GRID);
+    const x = board.x + column * board.tile;
+    const y = board.y + row * board.tile;
+    drawHackTile(art, hackArt, piece, x, y, board.tile);
+    drawHackTile(art, hackArt, index, preview.x + column * preview.tile,
+      preview.y + row * preview.tile, preview.tile);
+    if (hack.phase !== 'demo') {
+      const outline = index === hack.selected ? 0x97f2cd : index === hack.choice ? 0xffdc97 : 0x172c49;
+      art.lineStyle(index === hack.selected || index === hack.choice ? 2 : 1, outline)
+        .strokeRect(x + 1, y + 1, board.tile - 2, board.tile - 2);
+    }
+  }
+}
+
+function drawHackRoom(scene) {
+  const { hack } = scene;
+  const demo = hack.phase === 'demo';
+  scene.panelHeading.setText(demo ? 'SANTIAGO 2024  /  PRIMERA PLATANUS HACK'
+    : `SALA HACK  /  PUZZLE 4 × 4  /  ${Math.ceil(HACK_SECONDS - hack.elapsed)} s`).setY(148);
+  scene.panelTitle.setText(demo ? (hack.published ? '¡Mosaico completo!' : 'Se acabó el tiempo')
+    : 'Arma la imagen').setY(178);
+  scene.panelDetail.setFontSize('12px').setText('IMAGEN MODELO').setX(510).setY(207);
+  scene.panelStats.setText(demo ? (hack.published ? 'DE CERO A PRODUCTO EN 36 HORAS' : 'PUEDES SEGUIR LA GIRA')
+    : 'JOYSTICK + B1\nO CLIC EN 2 PIEZAS').setX(510).setY(338);
+  scene.panelRecord.setText('');
+  scene.panelStart.setY(391).setText(demo ? 'VOLVER A LA GIRA  /  ENTER'
+    : hack.selected === null ? 'TOMAR PIEZA  /  B1 · U' : 'INTERCAMBIAR  /  B1 · U');
+  scene.panelClose.setVisible(true).setX(400).setText('SALIR DE SALA HACK  /  B3 · O · ESC');
+  for (const option of scene.hackOptions) option.setVisible(!demo);
+  drawHackBoard(scene);
+}
+
 function drawRunPanel(scene, score) {
   const { phase, round } = scene;
   const transfer = phase === 'cleared';
@@ -892,6 +1202,12 @@ function drawRunPanel(scene, score) {
   const briefing = round.power === 'intro';
   const open = briefing || transfer || results;
   scene.panel.clear();
+  scene.hackBoard.setVisible(Boolean(scene.hack));
+  scene.panelDetail.setX(400);
+  scene.panelStats.setX(400);
+  scene.panelStart.setY(378);
+  scene.hackButton.setVisible(canStartHack(scene));
+  for (const option of scene.hackOptions) option.setVisible(false);
   scene.consoleStart.setVisible(!open);
   for (const field of [scene.panelHeading, scene.panelTitle, scene.panelDetail, scene.panelStats,
     scene.panelRecord, scene.panelStart, scene.panelEvent]) {
@@ -899,7 +1215,8 @@ function drawRunPanel(scene, score) {
   }
   const showExpress = canStartExpress(scene) && !scene.express;
   scene.panelRoute.setVisible(results);
-  scene.panelClose.setVisible(results).setX(showExpress ? 523 : 400);
+  scene.panelClose.setVisible(results).setX(showExpress ? 523 : 400)
+    .setText('CERRAR  /  B3 · O · ESC');
   scene.expressButton.setVisible(showExpress);
   scene.expressButton.setX(results ? 282 : 400).setY(open ? 423 : 178);
   if (!open) scene.expressButton.setText('TURNO EXPRESS  /  B2 · I');
@@ -910,6 +1227,11 @@ function drawRunPanel(scene, score) {
   scene.panel.lineStyle(2, 0x528687).strokeRoundedRect(116, 125, 568, 337, 10);
   scene.panel.fillStyle(0x31495d).fillRect(150, 347, 500, 1);
 
+  if (scene.hack) {
+    drawHackRoom(scene);
+    return;
+  }
+  scene.panelDetail.setFontSize('19px');
   if (briefing) {
     scene.panelHeading.setText('INCIDENTE DE RUTA  /  RELOJ EN PAUSA').setY(146);
     scene.panelTitle.setText(round.incident.title).setY(179);
