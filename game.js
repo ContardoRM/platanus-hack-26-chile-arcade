@@ -50,8 +50,9 @@ const HACK_BOARD = { x: 192, y: 200, tile: 40 };
 const HACK_PREVIEW = { x: 462, y: 220, tile: 24 };
 const EVENT_NAME = 'PLATANUS HACK 26';
 const EXPRESS = { ...STAGES[FINAL_STAGE_INDEX], seconds: 45, width: 24, rate: 1.4 };
+const LEGACY_GIRA_RECORD = 'cabina-a-tiempo.gira.record.v1';
 const RECORD_KEYS = {
-  gira: 'cabina-a-tiempo.gira.record.v1',
+  gira: 'cabina-a-tiempo.gira.record.v2',
   express: 'cabina-a-tiempo.express.record.v1'
 };
 
@@ -59,11 +60,11 @@ const GENERATOR = { center: 370, width: 36, speed: 165, restoreSeconds: 1.2 };
 const INCIDENTS = [
   { trigger: 3, leftChance: 0, hits: 5, title: 'CORTE DE LUZ', task: 'Sincroniza el generador de emergencia.',
     terminal: '> CORTE DE LUZ', action: 'ACTIVA GENERADOR', done: 'VOLVIENDO LA LUZ' },
-  { trigger: 2, leftChance: 0.35, hits: 5, title: 'DÍA DE MUERTOS', task: 'Envía cinco cabinas con flores a la ofrenda.',
+  { trigger: 2, leftChance: 0.35, hits: 3, title: 'DÍA DE MUERTOS', task: 'Envía tres cabinas con flores a la ofrenda.',
     terminal: '> OFRENDA', action: 'ENVÍA LAS FLORES', done: 'OFRENDA LISTA' },
   null, null, null,
-  { trigger: 1, leftChance: 0.5, hits: 5, title: 'OVNI EN EL GOLDEN GATE', task: 'Espera la ventana verde y cruza el haz.',
-    terminal: '> OVNI DETECTADO', action: 'CRUZA EL HAZ', done: 'CABLE LIBRE' }
+  { trigger: 1, leftChance: 0.5, hits: 3, title: 'OVNI EN EL GOLDEN GATE', task: 'Despacha cuando el haz se apague.',
+    terminal: '> OVNI DETECTADO', action: 'CABLE LIBRE · B1', done: 'CABLE LIBRE' }
 ];
 const SOUNDS = {
   dispatch: [{ wave: 'triangle', from: 440, to: 520, delay: 0, length: 0.115, volume: 0.065 }],
@@ -117,7 +118,7 @@ new Phaser.Game({
 });
 
 function newRound() {
-  return { elapsed: 0, windClock: 0, marker: 763, origin: 763, direction: -1, passengers: 0, combo: 0,
+  return { elapsed: 0, windClock: 0, marker: 763, origin: 763, direction: -1, passengers: 0, combo: 0, streakScore: 0,
     skipped: 0, consecutiveMisses: 0, perfects: 0, blocks: 0, score: 0, pause: 0, power: 'normal', powerTime: 0, generatorMiss: 0, incidentHits: 0, incident: null, feedback: '', feedbackTime: 0, trips: [] };
 }
 
@@ -131,6 +132,7 @@ function create() {
   this.express = false;
   this.expressUnlocked = false;
   this.records = { gira: null, express: null };
+  this.legacyGiraCompleted = false;
   this.history = { gira: [], express: [] };
   this.historyView = null;
   this.master = null;
@@ -223,6 +225,8 @@ function create() {
         advanceMaster(this);
       })
   );
+  this.firstDispatchHelp = label(400, 447, 'Pulsa B1 / U cuando el rombo entre en verde', '18px', '#ffedb0')
+    .setOrigin(0.5).setPadding(7).setBackgroundColor('#152237').setDepth(2).setVisible(false);
   this.tutorial = label(600, 474, '', '11px', '#ffdc97').setOrigin(1, 0).setDepth(2);
   this.dynamic = this.add.graphics().setDepth(1);
 
@@ -374,7 +378,18 @@ function scoreStorage() {
 async function loadRecords(scene) {
   const storage = scoreStorage();
   if (!storage) return;
-  await Promise.all(Object.entries(RECORD_KEYS).map(async ([mode, key]) => {
+  const legacy = (async () => {
+    try {
+      const result = await storage.get(LEGACY_GIRA_RECORD);
+      if (result?.found && validRecord(result.value)) {
+        scene.legacyGiraCompleted = true;
+        scene.expressUnlocked = true;
+      }
+    } catch {
+      // A failed legacy read does not affect the current leaderboard.
+    }
+  })();
+  await Promise.all([...Object.entries(RECORD_KEYS).map(async ([mode, key]) => {
     try {
       const [result, recent] = await Promise.all([
         storage.get(key), storage.get(key + '.history').catch(() => null)
@@ -389,7 +404,7 @@ async function loadRecords(scene) {
     } catch {
       // Keep the session playable if the arcade storage bridge is unavailable.
     }
-  }));
+  }), legacy]);
 }
 
 function submitRecord(scene, mode, score, blocks, eligible = true) {
@@ -878,14 +893,21 @@ function dispatch(round, stage) {
   if (inWindow) {
     round.consecutiveMisses = 0;
     if (perfect) round.perfects++;
-    round.score += perfect ? POINTS.perfect : POINTS.onTime;
+    const points = perfect ? POINTS.perfect : POINTS.onTime;
     round.passengers += 10;
     round.combo++;
+    if (stage === STAGES[FINAL_STAGE_INDEX]) {
+      round.streakScore += points;
+      if (round.combo === stage.goal) round.score += round.streakScore;
+    } else {
+      round.score += points;
+    }
     round.trips.push(0);
     launchForStage(round, stage);
     round.feedback = perfect ? '¡PERFECTO! +10 pasajeros' : '¡A tiempo! +10 pasajeros';
   } else {
     round.combo = 0;
+    round.streakScore = 0;
     round.skipped++;
     round.consecutiveMisses++;
     round.blocks++;
@@ -918,6 +940,7 @@ function advance(round, stage, seconds) {
   if (passedWindow(round, targetAt(round, stage), activationWidth(round, stage.width, stage))) {
     launchForStage(round, stage);
     round.combo = 0;
+    round.streakScore = 0;
     round.skipped++;
     round.consecutiveMisses++;
     round.score += POINTS.missed;
@@ -1060,8 +1083,9 @@ function update(_time, delta) {
     ? `${remaining}s   ${score} PTS   PERFECTOS ${round.perfects}   BLOQUEOS ${round.blocks}`
     : `${remaining}s   ${progressLabel} ${progress}/${stage.goal}   PASAJEROS ${passengers}   ${score} PTS`);
   drawRunPanel(this, score);
+  this.firstDispatchHelp.setVisible(this.phase === 'playing' && needsTutorial(round, stage));
   this.tutorial.setText(round.power === 'offline' ? `INCIDENTE ${round.incidentHits}/${round.incident.hits} · B1 / U EN VERDE`
-    : this.phase === 'playing' && needsTutorial(round, stage) ? 'Pulsa B1 / U al entrar en verde' : '');
+    : this.phase === 'playing' && !this.express && isFinal ? 'SOLO PUNTÚA LA RACHA FINAL' : '');
 
   this.dynamic.clear();
   if (this.phase === 'playing') drawWaitingPassengers(this.dynamic, round, this.sceneryTime);
@@ -1077,9 +1101,13 @@ function update(_time, delta) {
   }
   if (emergency && this.stageIndex === FINAL_STAGE_INDEX) {
     const x = 594 + Math.sin(this.sceneryTime * 2) * 42;
-    this.dynamic.fillStyle(0x83dfab, 0.22).fillTriangle(x, 235, x - 38, 320, x + 38, 320);
+    const cableClear = round.power === 'restoring' || (round.generatorMiss <= 0
+      && Math.abs(round.marker - GENERATOR.center) <= activationWidth(round, GENERATOR.width));
+    if (!cableClear) {
+      this.dynamic.fillStyle(0xf68d74, 0.32).fillTriangle(x, 235, x - 38, 320, x + 38, 320);
+    }
     this.dynamic.fillStyle(0xa594df).fillRect(x - 28, 221, 56, 12);
-    this.dynamic.fillStyle(0x83dfab).fillRect(x - 12, 214, 24, 8);
+    this.dynamic.fillStyle(cableClear ? 0x83dfab : 0xf68d74).fillRect(x - 12, 214, 24, 8);
   }
   drawConsole(this, round, stage, seconds);
   if (this.phase === 'playing' && isFinal) {
@@ -1287,7 +1315,7 @@ function switchHistory(scene) {
 function canStartMaster(scene) {
   if (scene.historyView || scene.master) return false;
   return (scene.phase === 'won' && scene.round.masterUnlocked)
-    || (scene.phase === 'ready' && Boolean(scene.records.gira));
+    || (scene.phase === 'ready' && Boolean(scene.records.gira || scene.legacyGiraCompleted));
 }
 
 function startMaster(scene) {
@@ -1420,7 +1448,7 @@ function drawRunPanel(scene, score) {
     scene.panelHeading.setText('INCIDENTE DE RUTA  /  RELOJ EN PAUSA').setY(146);
     scene.panelTitle.setText(round.incident.title).setY(179);
     scene.panelDetail.setText(round.incident.task).setY(304);
-    scene.panelStats.setText('5 ACIERTOS · CADA FALLO RESTA 1').setY(328);
+    scene.panelStats.setText(`${round.incident.hits} ACIERTOS · CADA FALLO RESTA 1`).setY(328);
     scene.panelRecord.setText('');
     scene.panelStart.setText('EMPEZAR  /  B1 · U · ENTER');
     drawIncidentArt(scene.panel, scene.stageIndex === FINAL_STAGE_INDEX ? 2 : scene.stageIndex);
@@ -1629,9 +1657,9 @@ function drawSideControls(scene, round, signal, playing, blocked, aligned) {
       : '> FIN DE TURNO\nTiempo agotado';
   } else if (round.feedbackTime > 0) {
     if (round.feedback.startsWith('¡PERFECTO')) {
-      terminal = `> ¡PERFECTO!\n+${POINTS.perfect} PTS\n+10 pasajeros`;
+      terminal = `> ¡PERFECTO!\n+${POINTS.perfect} ${scene.stageIndex === FINAL_STAGE_INDEX && !scene.express ? 'EN RACHA' : 'PTS'}\n+10 pasajeros`;
     } else if (round.feedback.startsWith('¡')) {
-      terminal = `> ¡A TIEMPO!\n+${POINTS.onTime} PTS\n+10 pasajeros`;
+      terminal = `> ¡A TIEMPO!\n+${POINTS.onTime} ${scene.stageIndex === FINAL_STAGE_INDEX && !scene.express ? 'EN RACHA' : 'PTS'}\n+10 pasajeros`;
     } else if (round.feedback.startsWith('Salida')) {
       terminal = `> BLOQUEO\n${POINTS.blocked} PTS\nEspera la marca`;
     } else {
