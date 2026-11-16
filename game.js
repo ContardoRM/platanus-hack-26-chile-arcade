@@ -42,7 +42,7 @@ const STAGES = [
     seconds: 50, speed: 305, leftChance: 0.5, track: 2, width: 19, center: 330, swing: 95, rate: 1.2, sky: 0x163042 }
 ];
 const FINAL_STAGE_INDEX = STAGES.length - 1;
-const HACK_SECONDS = 36;
+const HACK_SECONDS = 60;
 const HACK_GRID = 4;
 const HACK_ART_SIZE = 32;
 const HACK_TILE_PIXELS = HACK_ART_SIZE / HACK_GRID;
@@ -97,9 +97,14 @@ const CITY_MUSIC = [
     bass: [46, 53, 44, 48, 41, 48, 43, 46], accents: [1, 3, 5, 7, 9, 11, 13, 15] }
 ];
 const HACK_MUSIC = {
-  bpm: 105, beat: 2, wave: 'triangle',
-  lead: [76, 0, 79, 83, 0, 79, 74, 0, 72, 0, 76, 79, 81, 76, 74, 0],
-  bass: [40, 47, 43, 47, 36, 43, 38, 45], accents: [0, 4, 8, 12]
+  bpm: 84, beat: 4, wave: 'triangle', volume: 0.82,
+  lead: [72, 0, 76, 0, 79, 0, 76, 0, 74, 0, 77, 0, 81, 0, 79, 0],
+  bass: [48, 55, 50, 55], accents: [4, 12]
+};
+const MASTER_MUSIC = {
+  bpm: 58, beat: 4, wave: 'sine', volume: 0.58,
+  lead: [0, 64, 0, 0, 67, 0, 0, 0, 62, 0, 0, 66, 0, 0, 0, 0],
+  bass: [36, 36, 34, 38], accents: []
 };
 const POINTS = { perfect: 150, onTime: 100, blocked: -50, missed: -20 };
 const OPERATOR_NAMES = ['VOLANTÍN', 'ÁNGEL', 'OBELISCO', 'MONSERRATE', 'ÁVILA', 'GOLDEN'];
@@ -797,8 +802,9 @@ function updateMusic(scene) {
   const context = scene.soundContext;
   if (!context || context.state !== 'running' || scene.musicFailed) return;
   const track = scene.musicMuted ? null
-    : scene.hack?.phase === 'puzzle' ? HACK_MUSIC
-      : scene.phase === 'playing' || scene.phase === 'crossing' ? CITY_MUSIC[scene.stageIndex] : null;
+    : scene.master && scene.master.batch < MASTER_GROUPS.length ? MASTER_MUSIC
+      : scene.hack?.phase === 'puzzle' ? HACK_MUSIC
+        : scene.phase === 'playing' || scene.phase === 'crossing' ? CITY_MUSIC[scene.stageIndex] : null;
   try {
     if (track !== scene.musicTrack) {
       if (scene.musicOutput) {
@@ -810,6 +816,7 @@ function updateMusic(scene) {
       scene.musicNext = context.currentTime + 0.025;
       if (track) {
         scene.musicOutput = context.createGain();
+        scene.musicOutput.gain.value = track.volume ?? 1;
         scene.musicOutput.connect(context.destination);
       }
     }
@@ -1320,6 +1327,7 @@ function canStartMaster(scene) {
 
 function startMaster(scene) {
   if (!canStartMaster(scene)) return;
+  if (!scene.musicMuted) openAudio(scene);
   scene.master = { batch: 0, cursor: 0, errorUntil: 0 };
 }
 
@@ -1371,7 +1379,7 @@ function drawArchive(scene) {
   const done = master.batch >= MASTER_GROUPS.length;
   panel.fillStyle(0x061b14).fillRect(137, 137, 526, 207);
   panel.lineStyle(1, 0x326a50).strokeRect(137, 137, 526, 207);
-  scene.panelHeading.setText(`TURNO MAESTRO  /  LOTES AISLADOS ${master.batch}/3`).setY(149);
+  scene.panelHeading.setText(`TURNO MAESTRO  /  ${master.batch}/3  /  SIN LÍMITE DE TIEMPO`).setY(149);
   scene.panelTitle.setText('Archivo de Ruta').setY(178);
   scene.panelDetail.setText(done ? 'SEÑAL RECUPERADA  /  ESTACIÓN 07: FUERA DE PLANO' : '').setY(310);
   scene.panelStats.setText(done ? 'EL MAPA OFICIAL TERMINABA EN EL GOLDEN GATE.'
