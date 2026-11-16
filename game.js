@@ -232,6 +232,20 @@ function create() {
   );
   this.firstDispatchHelp = label(400, 447, 'Pulsa B1 / U cuando el rombo entre en verde', '18px', '#ffedb0')
     .setOrigin(0.5).setPadding(7).setBackgroundColor('#152237').setDepth(2).setVisible(false);
+  this.signatureButton = label(762, 176, 'FIRMAR  /  B1 · U', '12px', '#ffdc97')
+    .setOrigin(1, 0).setPadding(5).setBackgroundColor('#273c50').setDepth(4)
+    .setInteractive({ useHandCursor: true }).setVisible(false)
+    .on('pointerdown', () => startSignature(this));
+  this.signatureLetters = Array.from({ length: 3 }, (_, index) =>
+    label(328 + index * 72, 259, '', '32px').setOrigin(0.5).setPadding(12)
+      .setDepth(4).setInteractive({ useHandCursor: true }).setVisible(false)
+      .on('pointerdown', () => {
+        if (this.signature) {
+          this.signature.cursor = index;
+          changeSignature(this.signature, 1);
+        }
+      })
+  );
   this.tutorial = label(600, 474, '', '11px', '#ffdc97').setOrigin(1, 0).setDepth(2);
   this.dynamic = this.add.graphics().setDepth(1);
 
@@ -240,6 +254,16 @@ function create() {
     if (event.repeat) return;
     if (code === 'P1_5') {
       toggleMusic(this);
+      return;
+    }
+    if (this.signature) {
+      if (code === 'P1_3' || event.key === 'Escape') this.signature = null;
+      else if (code === 'P1_1' || code === 'START1') saveSignature(this);
+      else if (code === 'P1_U' || code === 'P1_D') changeSignature(this.signature, code === 'P1_U' ? 1 : -1);
+      else if (code === 'P1_L' || code === 'P1_R') {
+        const direction = code === 'P1_L' ? -1 : 1;
+        this.signature.cursor = (this.signature.cursor + direction + 3) % 3;
+      }
       return;
     }
     if (this.master) {
@@ -270,7 +294,10 @@ function create() {
     if (code === 'START1') confirmPanel(this);
     if (code === 'P1_3' || event.key === 'Escape') closeResults(this);
     if (code === 'P1_2') startExpress(this);
-    if (code === 'P1_1') pressDispatch(this);
+    if (code === 'P1_1') {
+      if (this.round.scoreEntry && (this.phase === 'won' || this.phase === 'finished')) startSignature(this);
+      else pressDispatch(this);
+    }
   };
   window.addEventListener('keydown', keydown);
   this.events.once('shutdown', () => {
@@ -286,6 +313,7 @@ function assignOperator(scene) {
 }
 
 function confirmPanel(scene) {
+  if (scene.signature) return saveSignature(scene);
   if (scene.master) return advanceMaster(scene);
   if (scene.historyView) return switchHistory(scene);
   if (scene.hack) {
@@ -298,6 +326,10 @@ function confirmPanel(scene) {
 }
 
 function closeResults(scene) {
+  if (scene.signature) {
+    scene.signature = null;
+    return;
+  }
   if (scene.master || scene.historyView) {
     scene.master = null;
     scene.historyView = null;
@@ -361,6 +393,7 @@ function startExpress(scene) {
 function validRecord(value) {
   return value && Number.isSafeInteger(value.score)
     && Number.isSafeInteger(value.blocks) && value.blocks >= 0
+    && (value.initials === undefined || (typeof value.initials === 'string' && /^[A-Z]{3}$/.test(value.initials)))
     && typeof value.operator === 'string'
     && OPERATOR_NAMES.includes(value.operator.slice(0, -3))
     && /-(0[1-9]|[1-9][0-9])$/.test(value.operator);
@@ -415,6 +448,7 @@ async function loadRecords(scene) {
 function submitRecord(scene, mode, score, blocks, eligible = true) {
   const round = scene.round;
   const candidate = { score, blocks, operator: scene.operator };
+  round.scoreEntry = candidate;
   scene.recordWrites = scene.recordWrites.then(async () => {
     const best = scene.records[mode];
     const improved = eligible && (!best || score > best.score
@@ -1366,10 +1400,10 @@ function drawArchive(scene) {
   if (historyView) {
     const history = scene.history[historyView];
     const best = scene.records[historyView];
-    scene.panelHeading.setText(best ? `RÉCORD · ${best.operator} · ${best.score} PTS` : 'HISTORIAL DE OPERADORES').setY(145);
+    scene.panelHeading.setText(best ? `RÉCORD · ${signedOperator(best)} · ${best.score} PTS` : 'HISTORIAL DE OPERADORES').setY(145);
     scene.panelTitle.setText(historyView === 'gira' ? 'Últimas partidas · Gira' : 'Últimas partidas · Express').setY(173);
-    scene.panelDetail.setText(history.length ? history.map(({ operator, score, blocks }, index) =>
-      `${String(index + 1).padStart(2, '0')}  ${operator.padEnd(14)}  ${String(score).padStart(6)} PTS  ·  ${blocks} BLOQ.`
+    scene.panelDetail.setText(history.length ? history.map((entry, index) =>
+      `${String(index + 1).padStart(2, '0')}  ${signedOperator(entry).padEnd(18)}  ${String(entry.score).padStart(6)} PTS  ·  ${entry.blocks} BLOQ.`
     ).join('\n') : 'Todavía no hay partidas guardadas.').setY(272);
     scene.panelStats.setText('');
     scene.panelStart.setText('CAMBIAR MODO  /  B2 · I');
@@ -1405,23 +1439,82 @@ function drawArchive(scene) {
   }
 }
 
+const SIGNATURE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+function signedOperator(entry) {
+  return entry.initials ? `${entry.initials} · ${entry.operator}` : entry.operator;
+}
+
+function startSignature(scene) {
+  const entry = scene.round.scoreEntry;
+  if (!entry || !['won', 'finished'].includes(scene.phase) || scene.historyView || scene.master) return;
+  scene.signature = { cursor: 0, letters: (entry.initials ?? 'AAA').split('') };
+}
+
+function changeSignature(signature, direction) {
+  const current = SIGNATURE_ALPHABET.indexOf(signature.letters[signature.cursor]);
+  signature.letters[signature.cursor] = SIGNATURE_ALPHABET[(current + direction + 26) % 26];
+}
+
+function saveSignature(scene) {
+  const initials = scene.signature.letters.join('');
+  const entry = scene.round.scoreEntry;
+  const mode = scene.express ? 'express' : 'gira';
+  scene.signature = null;
+  entry.initials = initials;
+  scene.recordWrites = scene.recordWrites.then(async () => {
+    try {
+      const storage = scoreStorage();
+      if (!storage) return;
+      await Promise.all([
+        storage.set(RECORD_KEYS[mode] + '.history', scene.history[mode]),
+        scene.records[mode] === entry ? storage.set(RECORD_KEYS[mode], entry) : undefined
+      ]);
+    } catch {
+      // The signed score is still available in this session.
+    }
+  });
+}
+
+function drawSignature(scene) {
+  scene.panelHeading.setText(EVENT_NAME + '  /  FIRMA DE OPERADOR').setY(156);
+  scene.panelTitle.setText('Firma tu partida').setY(199);
+  scene.panelDetail.setFontSize(19).setText('').setY(252);
+  scene.panelStats.setText('↑ ↓ CAMBIA LETRA · ← → ELIGE POSICIÓN · O CLIC').setY(318);
+  scene.panelRecord.setText('');
+  scene.panelStart.setText('GUARDAR FIRMA  /  B1 · U');
+  scene.panelClose.setVisible(true).setX(400).setText('VOLVER  /  B3 · O · ESC');
+  for (const [index, letter] of scene.signatureLetters.entries()) {
+    letter.setVisible(true).setText(scene.signature.letters[index])
+      .setBackgroundColor(index === scene.signature.cursor ? '#315c63' : '#24384d');
+  }
+}
+
 function drawRunPanel(scene, score) {
   const { phase, round } = scene;
   const transfer = phase === 'cleared';
   const finished = phase === 'finished';
   const results = phase === 'won' || finished;
   const briefing = round.power === 'intro';
-  const archive = Boolean(scene.master || scene.historyView);
+  const archive = Boolean(scene.master || scene.historyView || scene.signature);
   const open = briefing || transfer || results || archive;
-  scene.historyButton.setVisible(!scene.master && !scene.hack
-    && (phase === 'ready' || results));
-  scene.masterButton.setVisible(canStartMaster(scene)).setY(phase === 'ready' ? 221 : 348);
+  const resultMenu = results && !archive;
+  const canSign = resultMenu && Boolean(round.scoreEntry);
+  scene.historyButton.setVisible(!archive && (phase === 'ready' || resultMenu))
+    .setOrigin(resultMenu ? 0.5 : 1, resultMenu ? 0.5 : 0)
+    .setPosition(resultMenu ? (canSign ? 526 : 400) : 762, resultMenu ? 439 : 144);
+  scene.masterButton.setVisible(!scene.signature && canStartMaster(scene)).setY(phase === 'ready' ? 221 : 353);
   for (const cell of scene.masterCells) cell.setVisible(false);
+  for (const letter of scene.signatureLetters) letter.setVisible(false);
+  scene.signatureButton.setVisible(canSign).setOrigin(0.5).setPosition(274, 439);
   scene.panel.clear();
   scene.hackBoard.setVisible(Boolean(scene.hack));
   scene.panelDetail.setX(400);
   scene.panelStats.setX(400);
-  scene.panelStart.setY(378);
+  scene.panelRecord.setY(326);
+  scene.panelRoute.setY(227);
+  scene.panelStart.setY(resultMenu ? 390 : 378);
+  scene.panelEvent.setY(resultMenu ? 518 : 449);
   scene.hackButton.setVisible(canStartHack(scene));
   for (const option of scene.hackOptions) option.setVisible(false);
   scene.consoleStart.setVisible(!open);
@@ -1431,18 +1524,27 @@ function drawRunPanel(scene, score) {
   }
   const showExpress = canStartExpress(scene) && !scene.express;
   scene.panelRoute.setVisible(results);
-  scene.panelClose.setVisible(results).setX(showExpress ? 523 : 400)
+  scene.panelClose.setVisible(results).setPosition(showExpress && resultMenu ? 526 : 400, resultMenu ? 484 : 423)
     .setText('CERRAR  /  B3 · O · ESC');
   scene.expressButton.setVisible(showExpress);
-  scene.expressButton.setX(results ? 282 : 400).setY(open ? 423 : 178);
+  scene.expressButton.setPosition(resultMenu ? 274 : 400, resultMenu ? 484 : open ? 423 : 178);
   if (!open) scene.expressButton.setText('TURNO EXPRESS  /  B2 · I');
   if (!open) return;
 
   scene.panel.fillStyle(0x08111f, 0.73).fillRect(0, 0, 800, 600);
-  scene.panel.fillStyle(0x0e1d2e).fillRoundedRect(116, 125, 568, 337, 10);
-  scene.panel.lineStyle(2, 0x528687).strokeRoundedRect(116, 125, 568, 337, 10);
-  scene.panel.fillStyle(0x31495d).fillRect(150, 347, 500, 1);
+  const [panelX, panelY, panelWidth, panelHeight] = resultMenu
+    ? [75, 86, 650, 449] : [116, 125, 568, 337];
+  scene.panel.fillStyle(0x0e1d2e).fillRoundedRect(panelX, panelY, panelWidth, panelHeight, 10);
+  scene.panel.lineStyle(2, 0x528687).strokeRoundedRect(panelX, panelY, panelWidth, panelHeight, 10);
+  scene.panel.fillStyle(0x31495d).fillRect(resultMenu ? 114 : 150, resultMenu ? 332 : 347,
+    resultMenu ? 572 : 500, 1);
 
+  if (scene.signature) {
+    scene.panelRoute.setVisible(false);
+    scene.expressButton.setVisible(false);
+    drawSignature(scene);
+    return;
+  }
   if (archive) {
     drawArchive(scene);
     return;
@@ -1492,17 +1594,16 @@ function drawRunPanel(scene, score) {
   const time = scene.express ? EXPRESS.seconds
     : scene.completed.elapsed + (finished ? STAGES[scene.stageIndex].seconds : 0);
   const best = scene.records[scene.express ? 'express' : 'gira'];
-  scene.panelHeading.setText(EVENT_NAME + '  /  ARCADE CHALLENGE');
+  scene.panelHeading.setText(EVENT_NAME + '  /  ARCADE CHALLENGE').setY(119);
   scene.panelRoute.setText(scene.express ? 'TURNO EXPRESS · GOLDEN GATE'
     : finished ? 'FIN DE TURNO · ' + STAGES[scene.stageIndex].city
-      : 'SANTIAGO → CDMX → BUENOS AIRES → BOGOTÁ → CARACAS → GOLDEN GATE');
-  scene.panelTitle.setText(scene.operator);
-  scene.panelDetail.setText(`${score} PUNTOS`);
-  scene.panelStats.setText(`PERFECTOS ${perfects}  ·  BLOQUEOS ${blocks}  ·  TIEMPO ${time.toFixed(1)} s`);
+      : 'SANTIAGO → CDMX → BUENOS AIRES → BOGOTÁ → CARACAS → GOLDEN GATE').setY(204);
+  scene.panelTitle.setText(round.scoreEntry ? signedOperator(round.scoreEntry) : scene.operator).setY(165);
+  scene.panelDetail.setFontSize(28).setText(`${score} PUNTOS`).setY(245);
+  scene.panelStats.setText(`PERFECTOS ${perfects}  ·  BLOQUEOS ${blocks}  ·  TIEMPO ${time.toFixed(1)} s`).setY(284);
   scene.panelRecord.setText(best
-    ? `${round.newRecord ? '¡NUEVO RÉCORD!' : 'RÉCORD'}  ·  ${best.score} PTS  ·  ${best.operator}`
-    : '');
-  if (round.masterUnlocked) scene.panelStart.setY(384);
+    ? `${round.newRecord ? '¡NUEVO RÉCORD!' : 'RÉCORD'}  ·  ${best.score} PTS  ·  ${signedOperator(best)}`
+    : '').setY(311);
   scene.panelStart.setText(scene.express ? 'REINICIAR EXPRESS  /  ENTER' : 'REINICIAR GIRA  /  ENTER');
   scene.expressButton.setText('TURNO EXPRESS  /  B2 · I');
 }
